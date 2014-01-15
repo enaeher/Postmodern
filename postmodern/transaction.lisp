@@ -1,6 +1,7 @@
 (in-package :postmodern)
 
 (defparameter *transaction-level* 0)
+(defparameter *current-logical-transaction* nil)
 
 (defclass transaction-handle ()
   ((open-p :initform t :accessor transaction-open-p)
@@ -19,13 +20,14 @@ body exits normally, and aborting otherwise. An optional name can be
 given to the transaction, which can be used to force a commit or abort
 before the body unwinds."
   (let ((name (or name (gensym))))
-    `(let ((,name (make-instance 'transaction-handle))
-           (*transaction-level* (1+ *transaction-level*)))
-      (execute "BEGIN")
-      (unwind-protect
-           (multiple-value-prog1 (progn ,@body)
-             (commit-transaction ,name))
-        (abort-transaction ,name)))))
+    `(let* ((,name (make-instance 'transaction-handle))
+            (*transaction-level* (1+ *transaction-level*))
+            (*current-logical-transaction* ,name))
+       (execute "BEGIN")
+       (unwind-protect
+            (multiple-value-prog1 (progn ,@body)
+              (commit-transaction ,name))
+         (abort-transaction ,name)))))
 
 (defun abort-transaction (transaction)
   "Immediately abort an open transaction."
@@ -33,8 +35,8 @@ before the body unwinds."
     (let ((*database* (transaction-connection transaction)))
       (execute "ABORT"))
     (unwind-protect
-         (mapc #'funcall (abort-hooks transaction)))
-    (setf (transaction-open-p transaction) nil)))
+         (mapc #'funcall (abort-hooks transaction))
+      (setf (transaction-open-p transaction) nil))))
 
 (defun commit-transaction (transaction)
   "Immediately commit an open transaction."
@@ -42,8 +44,8 @@ before the body unwinds."
     (let ((*database* (transaction-connection transaction)))
       (execute "COMMIT"))
     (unwind-protect
-         (mapc #'funcall (commit-hooks transaction)))
-    (setf (transaction-open-p transaction) nil)))
+         (mapc #'funcall (commit-hooks transaction))
+      (setf (transaction-open-p transaction) nil))))
 
 
 (defclass savepoint-handle (transaction-handle)
@@ -59,7 +61,9 @@ associated database connection of a savepoint."))
 body exits normally, and rolling back otherwise. NAME is both the
 variable that can be used to release or rolled back before the body
 unwinds, and the SQL name of the savepoint."
-  `(let ((,name (make-instance 'savepoint-handle :name (to-sql-name ',name))))
+  `(let* ((,name (make-instance 'savepoint-handle :name (to-sql-name ',name)))
+          (*transaction-level* (1+ *transaction-level*))         
+          (*current-logical-transaction* ,name))
      (execute (format nil "SAVEPOINT ~A" (savepoint-name ,name)))
      (unwind-protect (multiple-value-prog1 (progn ,@body)
                        (release-savepoint ,name))
@@ -68,13 +72,12 @@ unwinds, and the SQL name of the savepoint."
 (defun rollback-savepoint (savepoint)
   "Immediately roll back a savepoint, aborting it results."
   (when (savepoint-open-p savepoint)
-    (let ((*database* (savepoint-connection savepoint))
-          (*transaction-level* (1+ *transaction-level*)))
+    (let ((*database* (savepoint-connection savepoint)))
       (execute (format nil "ROLLBACK TO SAVEPOINT ~A"
                        (savepoint-name savepoint))))
     (unwind-protect
-         (mapc #'funcall (abort-hooks savepoint)))
-    (setf (savepoint-open-p savepoint) nil)))
+         (mapc #'funcall (abort-hooks savepoint))
+      (setf (savepoint-open-p savepoint) nil))))
 
 (defun release-savepoint (savepoint)
   "Immediately release a savepoint, commiting its results."
@@ -83,8 +86,8 @@ unwinds, and the SQL name of the savepoint."
       (execute (format nil "RELEASE SAVEPOINT ~A"
                            (savepoint-name savepoint))))
     (unwind-protect
-         (mapc #'funcall (commit-hooks savepoint)))
-    (setf (transaction-open-p savepoint) nil)))
+         (mapc #'funcall (commit-hooks savepoint))
+      (setf (transaction-open-p savepoint) nil))))
 
 (defmacro with-logical-transaction ((&optional (name nil name-p)) &body body)
   "Executes the body within a with-transaction (if no transaction is
