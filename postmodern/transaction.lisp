@@ -62,7 +62,7 @@ body exits normally, and rolling back otherwise. NAME is both the
 variable that can be used to release or rolled back before the body
 unwinds, and the SQL name of the savepoint."
   `(let* ((,name (make-instance 'savepoint-handle :name (to-sql-name ',name)))
-          (*transaction-level* (1+ *transaction-level*))         
+          (*transaction-level* (1+ *transaction-level*))
           (*current-logical-transaction* ,name))
      (execute (format nil "SAVEPOINT ~A" (savepoint-name ,name)))
      (unwind-protect (multiple-value-prog1 (progn ,@body)
@@ -93,17 +93,16 @@ unwinds, and the SQL name of the savepoint."
   "Executes the body within a with-transaction (if no transaction is
 already in progress) or a with-savepoint (if one is), binding the
 transaction or savepoint to NAME (if supplied)"
-  (let ((macro-arguments (if name-p
-                             `(,name)
-                             '())))
-    `(if (zerop *transaction-level*)
-         (with-transaction ,macro-arguments ,@body)
-         (with-savepoint ,macro-arguments ,@body))))
+  `(if (zerop *transaction-level*)
+       (with-transaction ,(if name-p `(,name) '()) ,@body)
+       (with-savepoint ,(if name-p name (gensym)) ,@body)))
+
+(defun call-with-ensured-transaction (thunk)
+  (if (zerop *transaction-level*)
+      (with-transaction () (funcall thunk))
+      (funcall thunk)))
 
 (defmacro ensure-transaction (&body body)
   "Executes body within a with-transaction form if and only if no
 transaction is already in progress."
-  `(if (zerop *transaction-level*)
-       (with-transaction ()
-         ,@body)
-       ,@body))
+  `(call-with-ensured-transaction (lambda () ,@body)))
