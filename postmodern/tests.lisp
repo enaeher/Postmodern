@@ -176,7 +176,7 @@
 
 (test ensure-transaction
   (with-test-connection
-    (with-transaction (transaction-1)
+    (with-transaction ()
       (ensure-transaction
         (is (eql postmodern::*transaction-level* 1))))
     (is (eql postmodern::*transaction-level* 0))
@@ -256,8 +256,31 @@
       (execute (:notify 'foo)))
     (is (cl-postgres:wait-for-notification *database*) "foo")))
 
+(defclass test-col-name ()
+  ((a :col-type string :col-name aa :initarg :a :accessor test-a)
+   (b :col-type string :col-name bb :initarg :b :accessor test-b)
+   (c :col-type string              :initarg :c :accessor test-c))
+  (:metaclass dao-class)
+  (:keys a))
+
+(test dao-class-col-name
+  (with-test-connection
+    (execute "CREATE TEMPORARY TABLE test_col_name (aa text primary key,  bb text not null, c text not null)")
+    (let ((o (make-instance 'test-col-name :a "1" :b "2" :c "3")))
+      (save-dao o)
+      (let ((oo (get-dao 'test-col-name "1")))
+        (is (string= "1" (test-a oo)))
+        (is (string= "2" (test-b oo)))
+        (is (string= "3" (test-c oo)))))
+    (let ((o (get-dao 'test-col-name "1")))
+      (setf (test-b o) "b")
+      (update-dao o))
+    (is (string= "1" (test-a (get-dao 'test-col-name "1"))))
+    (is (string= "b" (test-b (get-dao 'test-col-name "1"))))
+    (is (string= "3" (test-c (get-dao 'test-col-name "1"))))))
+
 ;; create two tables with the same name in two different
-;; namesapces.
+;; namespaces.
 (test namespace
   (with-test-connection
     (is (not (table-exists-p 'test-uniq)))
@@ -274,3 +297,13 @@
     (drop-schema 'uniq)
     (is (not (schema-exist-p 'uniq)))
     (execute (:drop-table 'test-uniq))))
+
+(test arrays
+  (with-test-connection
+    (execute (:create-table test-data ((a :type integer[]))))
+    (protect
+      (is (table-exists-p 'test-data))
+      (execute (:insert-into 'test-data :set 'a (vector 3 4 5)))
+      (execute (:insert-into 'test-data :set 'a #()))
+      (execute (:drop-table 'test-data)))
+    (is (not (table-exists-p 'test-data)))))
